@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+import glob
+import json
+import os
+import sys
+
+SYSFS_ROOT = os.environ.get("BATTERY_MODE_SYSFS_ROOT", "/sys")
+
+
+def sys_path(*parts):
+    return os.path.join(SYSFS_ROOT, *parts)
+
+
+def read_text(path, default=None):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def read_int(path):
+    value = read_text(path)
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def read_first(path, names):
+    for name in names:
+        candidate = os.path.join(path, name)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def threshold_paths(path):
+    start = read_first(path, (
+        "charge_control_start_threshold",
+        "charge_start_threshold",
+    ))
+    end = read_first(path, (
+        "charge_control_end_threshold",
+        "charge_stop_threshold",
+    ))
+    return start, end
+
+
+def threshold_capability(path):
+    start, end = threshold_paths(path)
+    if start and end:
+        return "start_end"
+    if end:
+        return "end_only"
+    return "none"
+
+
+def batteries():
+    result = []
+    for path in sorted(glob.glob(sys_path("class", "power_supply", "*"))):
+        if read_text(os.path.join(path, "type")) == "Battery":
+            result.append(path)
+    return result
+
+
+def dmi_value(name):
+    return read_text(sys_path("class", "dmi", "id", name), "")
+
+
+def as_wh(value):
+    return None if value is None else value / 1_000_000.0
+
+
+def as_ah(value):
+    return None if value is None else value / 1_000_000.0
+
+
+def as_volts(value):
+    return None if value is None else value / 1_000_000.0
+
+
+def as_amps(value):
+    return None if value is None else value / 1_000_000.0
+
+
+def as_watts(value):
+    return None if value is None else value / 1_000_000.0
+
+
+def as_celsius(value):
+    return None if value is None else value / 10.0
+
+
+def health_percent(full, design):
+    if full is None or design is None or design <= 0:
+        return None
+    return round(full * 100.0 / design, 1)
+
+
+def battery_data(path):
+    name = os.path.basename(path)
+    start_path, end_path = threshold_paths(path)
+    capability = threshold_capability(path)
+
+    energy_now_raw = read_int(os.path.join(path, "energy_now"))
+    energy_full_raw = read_int(os.path.join(path, "energy_full"))
+    energy_design_raw = read_int(os.path.join(path, "energy_full_design"))
+
+    charge_now_raw = read_int(os.path.join(path, "charge_now"))
+    charge_full_raw = read_int(os.path.join(path, "charge_full"))
+    charge_design_raw = read_int(os.path.join(path, "charge_full_design"))
+
+    voltage_raw = read_int(os.path.join(path, "voltage_now"))
+    current_raw = read_int(os.path.join(path, "current_now"))
+    power_raw = read_int(os.path.join(path, "power_now"))
+
+    power_w = as_watts(power_raw)
+    power_derived = False
+    if power_w is None and voltage_raw is not None and current_raw is not None:
+        power_w = abs(voltage_raw * current_raw) / 1_000_000_000_000.0
+        power_derived = True
+
+    health = health_percent(energy_full_raw, energy_design_raw)
+    health_source = "energy"
+    if health is None:
+        health = health_percent(charge_full_raw, charge_design_raw)
+        health_source = "charge" if health is not None else None
+
+    year = read_int(os.path.join(path, "manufacture_year"))
+    month = read_int(os.path.join(path, "manufacture_month"))
+    day = read_int(os.path.join(path, "manufacture_day"))
+    manufactured = None
+    if year:
+        manufactured = f"{year:04d}"
+        if month:
+            manufactured += f"-{month:02d}"
+            if day:
+                manufactured += f"-{day:02d}"
+
+    return {
+        "name": name,
+        "path": path,
+        "present": read_int(os.path.join(path, "present")),
+        "status": read_text(os.path.join(path, "status")),
+        "capacity": read_int(os.path.join(path, "capacity")),
+        "capacity_level": read_text(os.path.join(path, "capacity_level")),
+        "health": read_text(os.path.join(path, "health")),
+        "technology": read_text(os.path.join(path, "technology")),
+        "manufacturer": read_text(os.path.join(path, "manufacturer")),
+        "model_name": read_text(os.path.join(path, "model_name")),
+        "serial_number": read_text(os.path.join(path, "serial_number")),
+        "manufactured": manufactured,
+        "cycle_count": read_int(os.path.join(path, "cycle_count")),
+        "energy_now_wh": as_wh(energy_now_raw),
+        "energy_full_wh": as_wh(energy_full_raw),
+        "energy_full_design_wh": as_wh(energy_design_raw),
+        "charge_now_ah": as_ah(charge_now_raw),
+        "charge_full_ah": as_ah(charge_full_raw),
+        "charge_full_design_ah": as_ah(charge_design_raw),
+        "health_percent": health,
+        "health_percent_source": health_source,
+        "voltage_v": as_volts(voltage_raw),
+        "voltage_min_design_v": as_volts(read_int(os.path.join(path, "voltage_min_design"))),
+        "voltage_max_design_v": as_volts(read_int(os.path.join(path, "voltage_max_design"))),
+        "current_a": as_amps(current_raw),
+        "power_w": power_w,
+        "power_derived": power_derived,
+        "temperature_c": as_celsius(read_int(os.path.join(path, "temp"))),
+        "time_to_empty_s": (
+            read_int(os.path.join(path, "time_to_empty_now"))
+            if os.path.exists(os.path.join(path, "time_to_empty_now"))
+            else read_int(os.path.join(path, "time_to_empty_avg"))
+        ),
+        "time_to_full_s": (
+            read_int(os.path.join(path, "time_to_full_now"))
+            if os.path.exists(os.path.join(path, "time_to_full_now"))
+            else read_int(os.path.join(path, "time_to_full_avg"))
+        ),
+        "threshold_capability": capability,
+        "threshold_start": read_int(start_path) if start_path else None,
+        "threshold_end": read_int(end_path) if end_path else None,
+        "threshold_start_file": os.path.basename(start_path) if start_path else None,
+        "threshold_end_file": os.path.basename(end_path) if end_path else None,
+    }
+
+
+def support_level(items):
+    if any(b["threshold_capability"] == "start_end" for b in items):
+        return "full"
+    if any(b["threshold_capability"] == "end_only" for b in items):
+        return "partial"
+    return "status_only"
+
+
+def build():
+    paths = batteries()
+    items = [battery_data(p) for p in paths]
+    controllable = [b for b in items if b["threshold_capability"] != "none"]
+    full_control = [b for b in items if b["threshold_capability"] == "start_end"]
+
+    if full_control:
+        primary = full_control[0]
+    elif controllable:
+        primary = controllable[0]
+    elif items:
+        primary = items[0]
+    else:
+        primary = None
+
+    return {
+        "project": "Battery Mode for Plasma",
+        "system": {
+            "vendor": dmi_value("sys_vendor"),
+            "product": dmi_value("product_name"),
+            "version": dmi_value("product_version"),
+        },
+        "battery_count": len(items),
+        "controllable_battery_count": len(controllable),
+        "full_control_battery_count": len(full_control),
+        "support_level": support_level(items),
+        "external_display_detection_available": os.path.isdir(sys_path("class", "drm")),
+        "thunderbolt_detection_available": os.path.isdir(sys_path("bus", "thunderbolt")),
+        "primary": primary,
+        "batteries": items,
+    }
+
+
+def print_capabilities(data):
+    system = data["system"]
+    system_name = " ".join(
+        x for x in (system.get("vendor"), system.get("product"), system.get("version")) if x
+    ) or "Unknown system"
+
+    print(f"System: {system_name}")
+    print(f"Battery devices: {data['battery_count']}")
+    if not data["batteries"]:
+        print("✗ No Linux power_supply battery found")
+        print("Support level: unsupported")
+        return 1
+
+    for b in data["batteries"]:
+        cap = b["threshold_capability"]
+        cap_text = {
+            "start_end": "START+STOP threshold control",
+            "end_only": "STOP-only threshold control",
+            "none": "status monitoring only",
+        }[cap]
+        print(f"  • {b['name']}: {cap_text}")
+
+    level = data["support_level"]
+    if level == "full":
+        print("✓ Charge START threshold supported")
+        print("✓ Charge STOP threshold supported")
+        print("Support level: full")
+    elif level == "partial":
+        print("– Charge START threshold controlled by hardware / unavailable")
+        print("✓ Charge STOP threshold supported")
+        print("Support level: partial (STOP-only)")
+    else:
+        print("– Charge threshold control unavailable")
+        print("Support level: status-only")
+
+    print(("✓" if data["external_display_detection_available"] else "–") + " External display detection")
+    print(("✓" if data["thunderbolt_detection_available"] else "–") + " Thunderbolt/USB4 detection interface")
+    return 0
+
+
+def main():
+    data = build()
+    if "--capabilities" in sys.argv:
+        raise SystemExit(print_capabilities(data))
+    if "--json" in sys.argv or len(sys.argv) == 1:
+        print(json.dumps(data, separators=(",", ":"), ensure_ascii=False))
+        return
+    print("Usage: battery-info [--json|--capabilities]", file=sys.stderr)
+    raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    main()

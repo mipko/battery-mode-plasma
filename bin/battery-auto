@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODE_FILE="/var/lib/x1-battery-auto/mode"
+
+if [[ ! -w "$MODE_FILE" ]]; then
+    echo "Cannot write $MODE_FILE." >&2
+    echo "Re-run the v4 installer so the mode file is owned by your user." >&2
+    exit 1
+fi
+
+printf '%s\n' "auto" > "$MODE_FILE"
+
+# The daemon notices the state-file change within ~0.25 s.
+sleep 0.35
+exec battery-auto-status

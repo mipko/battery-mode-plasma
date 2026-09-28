@@ -1,0 +1,21 @@
+{
+  "KPlugin": {
+    "Authors": [
+      {
+        "Name": "Mirko Cetkovic"
+      }
+    ],
+    "Category": "System Information",
+    "Description": "Generic KDE Plasma battery telemetry and charge-threshold controller",
+    "Icon": "battery",
+    "Id": "com.mirko.x1battery",
+    "Name": "Battery Mode",
+    "Version": "7.0.5",
+    "EnabledByDefault": true,
+    "License": "MIT"
+  },
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "KPackageStructure": "Plasma/Applet",
+  "X-Plasma-NotificationArea": "true",
+  "X-Plasma-NotificationAreaCategory": "Hardware"
+}

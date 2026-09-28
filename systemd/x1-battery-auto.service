@@ -1,0 +1,17 @@
+[Unit]
+Description=Battery Mode for Plasma automatic charging profile
+Documentation=file:/usr/share/doc/battery-mode-plasma/README.md
+After=local-fs.target
+ConditionPathExists=/sys/class/power_supply
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/x1-battery-auto
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

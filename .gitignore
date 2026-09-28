@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+*.tar.gz
+*.tar.gz.sha256

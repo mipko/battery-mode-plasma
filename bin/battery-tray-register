@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PLUGIN_ID="com.mirko.x1battery"
+
+if ! command -v qdbus6 >/dev/null 2>&1; then
+    echo "qdbus6 is required to register the System Tray item." >&2
+    exit 1
+fi
+
+qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript \
+'const widgetName = "com.mirko.x1battery";
+
+function splitList(value) {
+    if (!value) return [];
+    return value.split(",").filter(function(v) { return v.length > 0; });
+}
+
+function unique(values) {
+    const out = [];
+    for (let i = 0; i < values.length; ++i) {
+        if (out.indexOf(values[i]) === -1) out.push(values[i]);
+    }
+    return out;
+}
+
+function without(values, value) {
+    return values.filter(function(v) { return v !== value; });
+}
+
+let found = 0;
+
+for (let p = 0; p < panelIds.length; ++p) {
+    const panel = panelById(panelIds[p]);
+    if (!panel) continue;
+
+    for (let i = 0; i < panel.widgetIds.length; ++i) {
+        const trayApplet = panel.widgetById(panel.widgetIds[i]);
+        if (!trayApplet || trayApplet.type !== "org.kde.plasma.systemtray") continue;
+
+        const systemtrayId = trayApplet.readConfig("SystrayContainmentId");
+        if (!systemtrayId) continue;
+
+        const tray = desktopById(systemtrayId);
+        if (!tray) continue;
+
+        tray.currentConfigGroup = ["General"];
+
+        let extraItems = splitList(tray.readConfig("extraItems"));
+        let shownItems = splitList(tray.readConfig("shownItems"));
+        let hiddenItems = splitList(tray.readConfig("hiddenItems"));
+
+        extraItems = unique(extraItems.concat([widgetName]));
+        shownItems = unique(shownItems.concat([widgetName]));
+        hiddenItems = without(hiddenItems, widgetName);
+
+        tray.writeConfig("extraItems", extraItems.join(","));
+        tray.writeConfig("shownItems", shownItems.join(","));
+        tray.writeConfig("hiddenItems", hiddenItems.join(","));
+        tray.reloadConfig();
+
+        ++found;
+    }
+}
+
+print("registered-in-trays=" + found);'

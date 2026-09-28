@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PLUGIN_ID="com.mirko.x1battery"
+
+command -v qdbus6 >/dev/null 2>&1 || exit 0
+
+qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript \
+'const widgetName = "com.mirko.x1battery";
+
+function splitList(value) {
+    if (!value) return [];
+    return value.split(",").filter(function(v) { return v.length > 0; });
+}
+
+function without(values, value) {
+    return values.filter(function(v) { return v !== value; });
+}
+
+for (let p = 0; p < panelIds.length; ++p) {
+    const panel = panelById(panelIds[p]);
+    if (!panel) continue;
+
+    for (let i = 0; i < panel.widgetIds.length; ++i) {
+        const trayApplet = panel.widgetById(panel.widgetIds[i]);
+        if (!trayApplet || trayApplet.type !== "org.kde.plasma.systemtray") continue;
+
+        const systemtrayId = trayApplet.readConfig("SystrayContainmentId");
+        if (!systemtrayId) continue;
+
+        const tray = desktopById(systemtrayId);
+        if (!tray) continue;
+
+        tray.currentConfigGroup = ["General"];
+
+        tray.writeConfig("extraItems", without(splitList(tray.readConfig("extraItems")), widgetName).join(","));
+        tray.writeConfig("shownItems", without(splitList(tray.readConfig("shownItems")), widgetName).join(","));
+        tray.writeConfig("hiddenItems", without(splitList(tray.readConfig("hiddenItems")), widgetName).join(","));
+        tray.reloadConfig();
+    }
+}'

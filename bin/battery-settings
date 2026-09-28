@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+import fcntl
+import json
+import os
+import sys
+
+SETTINGS_FILE = "/var/lib/x1-battery-auto/settings.json"
+
+DEFAULTS = {
+    "desk_start": 75,
+    "desk_end": 80,
+    "travel_start": 95,
+    "travel_end": 100,
+    "persist_mode": False,
+}
+
+
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off"):
+        return False
+    raise ValueError("boolean must be true/false, yes/no, on/off, or 1/0")
+
+
+def validate(raw):
+    cfg = DEFAULTS.copy()
+    if isinstance(raw, dict):
+        cfg.update({k: raw[k] for k in DEFAULTS if k in raw})
+
+    for key in ("desk_start", "desk_end", "travel_start", "travel_end"):
+        if isinstance(cfg[key], bool):
+            raise ValueError(f"{key} must be an integer")
+        cfg[key] = int(cfg[key])
+
+    cfg["persist_mode"] = parse_bool(cfg["persist_mode"])
+
+    if not (0 <= cfg["desk_start"] < cfg["desk_end"] <= 100):
+        raise ValueError("DESK must satisfy 0 <= start < end <= 100")
+    if not (0 <= cfg["travel_start"] < cfg["travel_end"] <= 100):
+        raise ValueError("TRAVEL must satisfy 0 <= start < end <= 100")
+
+    return cfg
+
+
+def load():
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+            try:
+                return validate(json.load(f))
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    except FileNotFoundError:
+        return DEFAULTS.copy()
+
+
+def save(cfg):
+    """Persist settings through the existing user-owned file.
+
+    The state directory is intentionally root-owned, so an unprivileged UI
+    cannot create a sibling temporary file there for os.replace().  The
+    settings file itself is user-owned, however.  Use an exclusive advisory
+    lock and rewrite that inode in place; all readers use a shared lock, so
+    nobody can observe a partially written JSON document.
+    """
+    cfg = validate(cfg)
+
+    with open(SETTINGS_FILE, "r+", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            f.seek(0)
+            f.truncate(0)
+            json.dump(cfg, f, sort_keys=True, separators=(",", ":"))
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def usage():
+    print(
+        """Usage:
+  battery-settings
+  battery-settings --json
+  battery-settings set-all DESK_START DESK_END TRAVEL_START TRAVEL_END PERSIST
+
+Examples:
+  battery-settings set-all 75 80 95 100 false
+  battery-settings set-all 70 80 20 95 true
+"""
+    )
+
+
+def main():
+    try:
+        cfg = load()
+
+        if len(sys.argv) == 1:
+            print(f"DESK:          {cfg['desk_start']} / {cfg['desk_end']}")
+            print(f"TRAVEL:        {cfg['travel_start']} / {cfg['travel_end']}")
+            print(f"Persist mode:  {'yes' if cfg['persist_mode'] else 'no'}")
+            return
+
+        if sys.argv[1] == "--json" and len(sys.argv) == 2:
+            print(json.dumps(cfg, separators=(",", ":")))
+            return
+
+        if sys.argv[1] == "set-all" and len(sys.argv) == 7:
+            cfg = {
+                "desk_start": int(sys.argv[2]),
+                "desk_end": int(sys.argv[3]),
+                "travel_start": int(sys.argv[4]),
+                "travel_end": int(sys.argv[5]),
+                "persist_mode": parse_bool(sys.argv[6]),
+            }
+            save(cfg)
+            print(json.dumps(validate(cfg), separators=(",", ":")))
+            return
+
+        usage()
+        raise SystemExit(2)
+
+    except (ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"battery-settings: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

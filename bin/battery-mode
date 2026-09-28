@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+import fcntl
+import glob
+import json
+import os
+import sys
+
+MODE_FILE = "/var/lib/x1-battery-auto/mode"
+SETTINGS_FILE = "/var/lib/x1-battery-auto/settings.json"
+SYSFS_ROOT = os.environ.get("BATTERY_MODE_SYSFS_ROOT", "/sys")
+
+
+def sp(*parts):
+    return os.path.join(SYSFS_ROOT, *parts)
+
+
+def read(path, default=None):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def config():
+    defaults = {"DESK_START": 75, "DESK_END": 80, "TRAVEL_START": 95, "TRAVEL_END": 100}
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+            try:
+                raw = json.load(f)
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    except (OSError, json.JSONDecodeError):
+        return defaults
+    mapping = {"DESK_START": "desk_start", "DESK_END": "desk_end", "TRAVEL_START": "travel_start", "TRAVEL_END": "travel_end"}
+    out = defaults.copy()
+    try:
+        for target, source in mapping.items():
+            if source in raw:
+                out[target] = int(raw[source])
+        if not (0 <= out["DESK_START"] < out["DESK_END"] <= 100):
+            return defaults
+        if not (0 <= out["TRAVEL_START"] < out["TRAVEL_END"] <= 100):
+            return defaults
+    except (TypeError, ValueError):
+        return defaults
+    return out
+
+
+def threshold_paths(path):
+    start = end = None
+    for name in ("charge_control_start_threshold", "charge_start_threshold"):
+        p = os.path.join(path, name)
+        if os.path.exists(p):
+            start = p
+            break
+    for name in ("charge_control_end_threshold", "charge_stop_threshold"):
+        p = os.path.join(path, name)
+        if os.path.exists(p):
+            end = p
+            break
+    return start, end
+
+
+def find_batteries():
+    result = []
+    for p in sorted(glob.glob(sp("class", "power_supply", "*"))):
+        if read(os.path.join(p, "type")) != "Battery":
+            continue
+        start, end = threshold_paths(p)
+        capability = "start_end" if start and end else ("end_only" if end else "none")
+        result.append((p, start, end, capability))
+    return result
+
+
+def primary_battery():
+    bats = find_batteries()
+    for item in bats:
+        if item[3] == "start_end":
+            return item
+    for item in bats:
+        if item[3] == "end_only":
+            return item
+    return bats[0] if bats else None
+
+
+def ac_online():
+    for p in glob.glob(sp("class", "power_supply", "*")):
+        if read(os.path.join(p, "type")) == "Battery":
+            continue
+        if read(os.path.join(p, "online")) == "1":
+            return True
+    return False
+
+
+def external_monitor_connected():
+    for s in glob.glob(sp("class", "drm", "card*-*", "status")):
+        connector = os.path.basename(os.path.dirname(s))
+        if any(x in connector for x in ("-eDP-", "-LVDS-", "-DSI-")):
+            continue
+        if read(s) == "connected":
+            return True
+    return False
+
+
+def is_external_thunderbolt_router_name(name):
+    if name.startswith("domain") or "-" not in name:
+        return False
+    domain_text, route_text = name.split("-", 1)
+    try:
+        int(domain_text, 10)
+        route = int(route_text, 16)
+    except ValueError:
+        return False
+    return route != 0
+
+
+def thunderbolt_connected():
+    for p in glob.glob(sp("bus", "thunderbolt", "devices", "*")):
+        name = os.path.basename(p)
+        if not is_external_thunderbolt_router_name(name):
+            continue
+        try:
+            if int(read(os.path.join(p, "authorized"), "0")) > 0:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
+def int_or_none(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def main():
+    requested = read(MODE_FILE, "auto")
+    if requested not in ("auto", "desk", "travel"):
+        requested = "auto"
+    c = config()
+    primary = primary_battery()
+    ac = ac_online()
+    monitor = external_monitor_connected()
+    tb = thunderbolt_connected()
+
+    if requested == "desk":
+        effective, label = "desk", "DESK"
+    elif requested == "travel":
+        effective, label = "travel", "TRAVEL"
+    elif ac and (monitor or tb):
+        effective, label = "desk", "AUTO→DESK"
+    else:
+        effective, label = "travel", "AUTO→TRAVEL"
+
+    profile_start, profile_end = ((c["DESK_START"], c["DESK_END"]) if effective == "desk" else (c["TRAVEL_START"], c["TRAVEL_END"]))
+    capacity = status = actual_start = actual_end = battery_name = None
+    capability = "none"
+    if primary:
+        bat, start_path, end_path, capability = primary
+        battery_name = os.path.basename(bat)
+        capacity = int_or_none(read(os.path.join(bat, "capacity")))
+        status = read(os.path.join(bat, "status"))
+        actual_start = int_or_none(read(start_path)) if start_path else None
+        actual_end = int_or_none(read(end_path)) if end_path else None
+
+    data = {
+        "requested": requested,
+        "effective": effective,
+        "label": label,
+        "battery": battery_name,
+        "capacity": capacity,
+        "status": status,
+        "start": actual_start,
+        "end": actual_end,
+        "expected_start": profile_start if capability == "start_end" else None,
+        "expected_end": profile_end if capability in ("start_end", "end_only") else None,
+        "threshold_capability": capability,
+        "threshold_supported": capability != "none",
+        "ac": ac,
+        "external_monitor": monitor,
+        "thunderbolt": tb,
+    }
+
+    if "--json" in sys.argv:
+        print(json.dumps(data, separators=(",", ":")))
+    elif "--requested" in sys.argv:
+        print(requested.upper())
+    elif "--effective" in sys.argv:
+        print(effective.upper())
+    else:
+        print(label)
+
+
+if __name__ == "__main__":
+    main()

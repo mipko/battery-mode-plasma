@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "Battery Mode for Plasma"
+echo "======================="
+echo
+echo "Mode:              $(battery-mode)"
+echo "Requested:         $(battery-mode --requested)"
+echo "Effective:         $(battery-mode --effective)"
+echo
+battery-settings
+echo
+
+info="$(battery-info --json)"
+mode_json="$(battery-mode --json)"
+python3 - "$info" "$mode_json" <<'PY'
+import json, sys
+info = json.loads(sys.argv[1]); mode = json.loads(sys.argv[2]); b = info.get("primary") or {}
+def yn(v): return "yes" if v else "no"
+def val(v, suffix="", digits=None):
+    if v is None: return "—"
+    if isinstance(v, float) and digits is not None: return f"{v:.{digits}f}{suffix}"
+    return f"{v}{suffix}"
+def hms(sec):
+    if sec is None or sec < 0: return "—"
+    h, rem = divmod(int(sec), 3600); m = rem // 60
+    return f"{h}h {m:02d}m" if h else f"{m}m"
+s = info.get("system") or {}
+system_name = " ".join(x for x in (s.get("vendor"), s.get("product"), s.get("version")) if x) or "—"
+print(f"System:            {system_name}")
+print(f"Support level:     {info.get('support_level', '—')}")
+print(f"Battery device:    {b.get('name') or '—'}")
+print(f"Manufacturer:      {b.get('manufacturer') or '—'}")
+print(f"Model:             {b.get('model_name') or '—'}")
+print(f"Technology:        {b.get('technology') or '—'}")
+print(f"Serial:            {b.get('serial_number') or '—'}")
+print()
+print(f"Charge:            {val(b.get('capacity'), '%')}")
+print(f"State:             {b.get('status') or '—'}")
+print(f"Capacity level:    {b.get('capacity_level') or '—'}")
+print(f"Kernel health:     {b.get('health') or '—'}")
+print(f"Cycles:            {val(b.get('cycle_count'))}")
+print(f"Health full/design: {val(b.get('health_percent'), '%', 1)}")
+print()
+print(f"Energy now:        {val(b.get('energy_now_wh'), ' Wh', 2)}")
+print(f"Energy full:       {val(b.get('energy_full_wh'), ' Wh', 2)}")
+print(f"Energy design:     {val(b.get('energy_full_design_wh'), ' Wh', 2)}")
+print(f"Charge now:        {val(b.get('charge_now_ah'), ' Ah', 3)}")
+print(f"Charge full:       {val(b.get('charge_full_ah'), ' Ah', 3)}")
+print(f"Charge design:     {val(b.get('charge_full_design_ah'), ' Ah', 3)}")
+print()
+print(f"Voltage:           {val(b.get('voltage_v'), ' V', 2)}")
+print(f"Current:           {val(abs(b['current_a']) if b.get('current_a') is not None else None, ' A', 2)}")
+print(f"Power:             {val(abs(b['power_w']) if b.get('power_w') is not None else None, ' W', 2)}")
+print(f"Temperature:       {val(b.get('temperature_c'), ' °C', 1)}")
+print(f"Time to empty:     {hms(b.get('time_to_empty_s'))}")
+print(f"Time to full:      {hms(b.get('time_to_full_s'))}")
+print()
+print(f"Threshold control: {b.get('threshold_capability') or 'none'}")
+print(f"Start threshold:   {val(b.get('threshold_start'), '%')}")
+print(f"Stop threshold:    {val(b.get('threshold_end'), '%')}")
+print(f"AC online:         {yn(mode.get('ac'))}")
+print(f"Ext. monitor:      {yn(mode.get('external_monitor'))}")
+print(f"Thunderbolt/USB4:  {yn(mode.get('thunderbolt'))}")
+PY
+
+if systemctl is-active --quiet x1-battery-auto.service 2>/dev/null; then
+    echo "Auto service:      active"
+else
+    echo "Auto service:      inactive"
+fi
+
+echo
+echo "Recent daemon decision:"
+journalctl -u x1-battery-auto.service -n 1 --no-pager 2>/dev/null || true
