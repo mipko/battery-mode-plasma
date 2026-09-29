@@ -438,7 +438,8 @@ PlasmoidItem {
         // KDE System Tray reparents the whole child applet (root) into its
         // real iconContainer. Anchor to that container so Wayland placement
         // uses the actual tray cell on the panel.
-        visualParent: root.parent ? root.parent : compact
+        // Before reparenting, use root: compact is scoped to its Component.
+        visualParent: root.parent ? root.parent : root
 
         popupDirection: switch (Plasmoid.location) {
             case PlasmaCore.Types.TopEdge:
